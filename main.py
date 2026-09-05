@@ -7,17 +7,15 @@ from fastapi.responses import FileResponse
 from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker
 from pydantic import BaseModel
-print("--- 1. FastAPI 앱 초기화 시작 ---")
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+
+print("--- 1. FastAPI 앱 초기화 시작 ---")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 서버가 켜질 때 실행
     print("서버 시작 중: DB 연결 확인...")
     try:
-        # DB 테이블 생성 코드가 있다면 이 안으로 이동
-        # Base.metadata.create_all(bind=engine)
         print("DB 연결 성공!")
     except Exception as e:
         print(f"DB 연결 실패: {e}")
@@ -28,13 +26,10 @@ async def lifespan(app: FastAPI):
     print("서버 종료")
 
 app = FastAPI(lifespan=lifespan)
+
 # 1. static 폴더 안의 파일들(css, js 등)을 웹에서 접근할 수 있게 열어줍니다.
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# 2. 메인 주소("/")로 접속했을 때 static/index.html을 반환합니다.
-@app.get("/")
-def read_root():
-    return FileResponse("static/index.html")
 print("--- 2. DB 엔진 설정 시작 ---")
 # --- 1. Supabase PostgreSQL DB 연결 ---
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./fallback.db")
@@ -58,6 +53,7 @@ class BannedWord(Base):
     __tablename__ = "banned_words"
     id = Column(Integer, primary_key=True, index=True)
     word = Column(String, unique=True, nullable=False)
+    type = Column(String, default="both") # 'both' 또는 'output'
 
 class SystemPrompt(Base):
     __tablename__ = "system_prompt"
@@ -70,7 +66,6 @@ class UserDevice(Base):
     device_id = Column(String, unique=True, index=True, nullable=False)
     violations = Column(Integer, default=0)
     is_blocked = Column(Boolean, default=False)
-
 
 try:
     Base.metadata.create_all(bind=engine)
@@ -113,14 +108,6 @@ def get_system_prompt():
     finally:
         db.close()
 
-# [최적화] DB를 단 1번만 열어서 금지어 포함 여부 검사
-def check_profanity(text: str, word_type = None) -> bool:
-    banned_words = get_banned_words()
-    for word in banned_words:
-        if word in text:
-            return True
-    return False
-
 def handle_device_violation(device_id: str, is_violation: bool):
     db = SessionLocal()
     try:
@@ -147,7 +134,9 @@ def handle_device_violation(device_id: str, is_violation: bool):
 # --- 3. 기본 메인 페이지 ---
 @app.get("/", response_class=HTMLResponse)
 def read_root():
-    if os.path.exists("index.html"):
+    if os.path.exists("static/index.html"):
+        return FileResponse("static/index.html")
+    elif os.path.exists("index.html"):
         with open("index.html", "r", encoding="utf-8") as f:
             return f.read()
     return "<h1>index.html 파일을 찾을 수 없습니다.</h1>"
@@ -170,13 +159,12 @@ async def chat_endpoint(req: ChatRequest):
         return {"response": "이용 약관 위반으로 인해 귀하의 계정은 일시 제한되었습니다. 나중에 다시 시도해주세요."}
 
     # ----------------------------------------------------
-    # [1단계] 사용자 입력 검열 ('both' 타입 금지어만 대상)
+    # [1단계] 사용자 입력 검열 ('both' 타입 금지어만 대상 -> AI 호출 전 즉시 차단)
     # ----------------------------------------------------
     both_banned_words = get_banned_words("both") 
     
     for word in both_banned_words:
         if word in user_message:
-            # DeepSeek을 부르기 전에 즉시 차단!
             handle_device_violation(device_id, is_violation=True)
             return {"response": "죄송합니다. 현재 제 범위를 벗어난 질문입니다. 다른 이야기를 해볼까요?"}
 
@@ -200,7 +188,6 @@ async def chat_endpoint(req: ChatRequest):
     }
 
     try:
-        # 💡 call_deepseek_api 대신 원래 쓰시던 requests.post 코드를 정확히 배치했습니다!
         response = requests.post("https://api.deepseek.com/chat/completions", json=payload, headers=headers, timeout=15)
         if response.status_code != 200:
             return {"response": "AI 응답을 가져오는 데 실패했습니다."}
@@ -208,13 +195,12 @@ async def chat_endpoint(req: ChatRequest):
         ai_raw_response = response.json()["choices"][0]["message"]["content"]
 
         # ----------------------------------------------------
-        # [3단계] 출력 검열 ('both' 및 'output' 타입 금지어 모두 대상)
+        # [3단계] 출력 검열 ('both' 및 'output' 타입 금지어 모두 대상 -> 출력 직후 즉시 차단)
         # ----------------------------------------------------
         output_banned_words = get_banned_words(["both", "output"])
         
         for word in output_banned_words:
             if word in ai_raw_response:
-                # AI 답변에 금지어가 포함된 경우 즉시 차단 메시지로 교체!
                 handle_device_violation(device_id, is_violation=True)
                 return {"response": "죄송합니다. 제 답변 중에 부적절한 내용이 포함되어 있었습니다. 다른 주제로 이야기 해볼까요?"}
 
@@ -222,57 +208,6 @@ async def chat_endpoint(req: ChatRequest):
         # [4단계] 모든 검열 통과 시 정상 답변 반환
         # ----------------------------------------------------
         return {"response": ai_raw_response}
-
-    except Exception:
-        return {"response": "서버 오류가 발생했습니다."}
-def chat_endpoint(request: ChatRequest):
-    device_id = request.device_id.strip()
-    user_message = request.message.strip()
-
-    # 1. 기기 차단 여부 확인
-    is_blocked, current_violations = handle_device_violation(device_id, is_violation=False)
-    if is_blocked:
-        return {"response": "이용 약관 위반으로 인해 귀하의 계정은 일시 제한되었습니다. 나중에 다시 시도해주세요."}
-
-    # 2. 사용자 메시지 금지어 체크 (💡 입력 시에는 'both' 타입만 검사!)
-    if check_profanity(user_message, word_type="both"):
-        is_now_blocked, new_violations = handle_device_violation(device_id, is_violation=True)
-        if is_now_blocked:
-            return {"response": "이용 약관 위반으로 인해 귀하의 계정은 일시 제한되었습니다. 나중에 다시 시도해주세요."}
-        else:
-            return {"response": "죄송합니다. 현재 제 범위를 벗어난 질문입니다. 다른 이야기를 해볼까요?"}
-
-    if not DEEPSEEK_API_KEY:
-        raise HTTPException(status_code=500, detail="DEEPSEEK_API_KEY가 설정되지 않았습니다.")
-
-    # 3. DeepSeek API 호출
-    current_system_prompt = get_system_prompt()
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": "deepseek-chat",
-        "messages": [
-            {"role": "system", "content": current_system_prompt},
-            {"role": "user", "content": user_message}
-        ]
-    }
-
-    try:
-        response = requests.post("https://api.deepseek.com/chat/completions", json=payload, headers=headers, timeout=15)
-        if response.status_code != 200:
-            return {"response": "AI 응답을 가져오는 데 실패했습니다."}
-            
-        bot_reply = response.json()["choices"][0]["message"]["content"]
-
-        # 4. AI 답변 금지어 2차 체크 (💡 출력 시에는 'both'와 'output' 모두 검사!)
-        if check_profanity(bot_reply, word_type=["both", "output"]):
-            # 필요하다면 출력 위반 시에도 위반 카운트를 올릴 수 있습니다.
-            handle_device_violation(device_id, is_violation=True)
-            return {"response": "죄송합니다. 제 답변 중에 부적절한 내용이 포함되어 있었습니다. 다른 주제로 이야기해볼까요?"}
-
-        return {"response": bot_reply}
 
     except Exception:
         return {"response": "서버 오류가 발생했습니다."}
@@ -305,7 +240,7 @@ def list_banned_words():
     return {"banned_words": get_banned_words()}
 
 @app.post("/admin/banned-words")
-def add_banned_word(word: str, x_admin_key: str = Header(None)):
+def add_banned_word(word: str, word_type: str = "both", x_admin_key: str = Header(None)):
     if x_admin_key != ADMIN_SECRET_KEY:
         raise HTTPException(status_code=403, detail="권한이 없습니다.")
     db = SessionLocal()
@@ -314,10 +249,10 @@ def add_banned_word(word: str, x_admin_key: str = Header(None)):
         existing = db.query(BannedWord).filter(BannedWord.word == word_clean).first()
         if existing:
             return JSONResponse({"message": "이미 존재하는 금지어입니다."}, status_code=400)
-        new_word = BannedWord(word=word_clean)
+        new_word = BannedWord(word=word_clean, type=word_type)
         db.add(new_word)
         db.commit()
-        return {"message": f"'{word_clean}' 금지어가 성공적으로 추가되었습니다."}
+        return {"message": f"'{word_clean}' ({word_type}) 금지어가 성공적으로 추가되었습니다."}
     finally:
         db.close()
 
