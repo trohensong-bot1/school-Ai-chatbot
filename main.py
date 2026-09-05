@@ -1,162 +1,250 @@
 import os
-import json
-import asyncio
-from typing import Dict
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import StreamingResponse
+import requests
+from fastapi import FastAPI, HTTPException, Header
+from fastapi.responses import JSONResponse, HTMLResponse
+from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean
+from sqlalchemy.orm import declarative_base, sessionmaker
 from pydantic import BaseModel
-from openai import OpenAI
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# --- 1. Supabase PostgreSQL DB 연결 ---
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./fallback.db")
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "your_deepseek_api_key_here")
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
-client = OpenAI(
-    api_key=DEEPSEEK_API_KEY,
-    base_url="https://api.deepseek.com"
-)
+# --- 2. DB 테이블 모델 정의 ---
+class BannedWord(Base):
+    __tablename__ = "banned_words"
+    id = Column(Integer, primary_key=True, index=True)
+    word = Column(String, unique=True, nullable=False)
 
-BOTH_BLOCKED_WORDS = ["송연호", "촬영", "얼굴", '우정혁']
-OUTPUT_ONLY_BLOCKED_WORDS = ["최호근", "홍윤건", "최준혁"]
+class SystemPrompt(Base):
+    __tablename__ = "system_prompt"
+    id = Column(Integer, primary_key=True, index=True)
+    content = Column(Text, nullable=False)
 
-SCHOOL_CONTEXT = """
-너는 우리 학교 학생들을 돕는 AI 도우미야.
-학교: 하안북중학교
-점심시간: 오후 12:45-오후 1:35
-주요 학사 일정:
-2학기 3학년 1차 정기시험: 2026.11.17 - 18
-체육 대회: 알려진 바 없음
-하늘빛 축제: 2026.12.24
-종업식 및 졸업식: 2027.1.3
-- 매점: 매점 없음
-체육관: 3층
-미술실: 3층
-음악실: 2층과 4층
-급식실: 2층
-가사실: 2층
-도서실: 1층
-세탁실: 1층
-1학년 학년부장: 김혜진(도덕)
-2학년 학년부장: 알 수 없음
-3학년 학년부장: 변신옥(역사)
-- 도서관: 최대 3권, 7일 대출 가능
-"""
-# 기기별 금지어 위반 횟수 저장소 (실제 운영 시 DB로 교체 가능)
-# 구조: {"device_id": 위반_횟수}
-VIOLATION_COUNTS: Dict[str, int] = {}
-MAX_ALLOWED_VIOLATIONS = 8
+class UserDevice(Base):
+    __tablename__ = "user_devices"
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(String, unique=True, index=True, nullable=False)
+    violations = Column(Integer, default=0)
+    is_blocked = Column(Boolean, default=False)
 
+Base.metadata.create_all(bind=engine)
 
-class ChatRequest(BaseModel):
-    message: str
-    device_id: str  # 프론트엔드에서 고유 기기 ID 전달받음
+def init_system_prompt():
+    db = SessionLocal()
+    try:
+        if db.query(SystemPrompt).count() == 0:
+            db.add(SystemPrompt(content="너는 친절하고 유용한 학교 AI 도우미 챗봇이야. 학생들이 물어보는 질문에 정중하게 답변해줘."))
+            db.commit()
+    finally:
+        db.close()
 
-def check_words(text: str, word_list: list) -> bool:
-    for word in word_list:
+init_system_prompt()
+
+# --- Helper 함수들 ---
+def get_banned_words():
+    db = SessionLocal()
+    try:
+        words = db.query(BannedWord.word).all()
+        return [w[0] for w in words]
+    finally:
+        db.close()
+
+def get_system_prompt():
+    db = SessionLocal()
+    try:
+        prompt = db.query(SystemPrompt).order_by(SystemPrompt.id.desc()).first()
+        return prompt.content if prompt else "너는 친절하고 유용한 학교 AI 도우미 챗봇이야."
+    finally:
+        db.close()
+
+def check_profanity(text: str) -> bool:
+    banned_words = get_banned_words()
+    for word in banned_words:
         if word in text:
             return True
     return False
 
-# 위반 횟수 증가 및 영구 차단 여부 반환 함수
-def record_violation(device_id: str) -> int:
-    current_count = VIOLATION_COUNTS.get(device_id, 0) + 1
-    VIOLATION_COUNTS[device_id] = current_count
-    return current_count
+def handle_device_violation(device_id: str, is_violation: bool):
+    db = SessionLocal()
+    try:
+        device = db.query(UserDevice).filter(UserDevice.device_id == device_id).first()
+        if not device:
+            device = UserDevice(device_id=device_id, violations=0, is_blocked=False)
+            db.add(device)
+            db.commit()
+            db.refresh(device)
 
-async def generate_chat_stream(user_message: str, device_id: str):
-    all_output_blocked = BOTH_BLOCKED_WORDS + OUTPUT_ONLY_BLOCKED_WORDS
+        if device.is_blocked:
+            return True, device.violations
 
-    # 0. 이미 10회 이상 위반한 기기인지 확인
-    if VIOLATION_COUNTS.get(device_id, 0) >= MAX_ALLOWED_VIOLATIONS:
-        yield json.dumps({
-            "type": "banned", 
-            "content": "이용 약관 위반으로 인해 귀하의 계정은 일시 정지되었습니다. 나중에 다시 시도해 주세요."
-        }) + "\n"
-        return
+        if is_violation:
+            device.violations += 1
+            if device.violations >= 10:
+                device.is_blocked = True
+            db.commit()
 
-    # 1. 입력 검사
-    if check_words(user_message, BOTH_BLOCKED_WORDS):
-        count = record_violation(device_id)
-        
-        if count >= MAX_ALLOWED_VIOLATIONS:
-            yield json.dumps({
-                "type": "banned", 
-                "content": "이용 약관 위반으로 인해 귀하의 계정은 일시 정지되었습니다. 나중에 다시 시도해 주세요."
-            }) + "\n"
+        return device.is_blocked, device.violations
+    finally:
+        db.close()
+
+# --- 3. 기본 메인 페이지 ---
+@app.get("/", response_class=HTMLResponse)
+def read_root():
+    if os.path.exists("index.html"):
+        with open("index.html", "r", encoding="utf-8") as f:
+            return f.read()
+    return "<h1>index.html 파일을 찾을 수 없습니다.</h1>"
+
+# --- 4. 챗봇 API (/chat) ---
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+
+class ChatRequest(BaseModel):
+    message: str
+    device_id: str = "unknown_device"
+
+@app.post("/chat")
+def chat_endpoint(request: ChatRequest):
+    device_id = request.device_id.strip()
+    user_message = request.message.strip()
+
+    # 1. 기기 차단 여부 확인
+    is_blocked, current_violations = handle_device_violation(device_id, is_violation=False)
+    if is_blocked:
+        return {"response": "이용 약관 위반으로 인해 귀하의 계정은 일시 제한되었습니다. 나중에 다시 시도해주세요."}
+
+    # 2. 사용자 메시지 금지어 체크
+    if check_profanity(user_message):
+        is_now_blocked, new_violations = handle_device_violation(device_id, is_violation=True)
+        if is_now_blocked:
+            return {"response": "이용 약관 위반으로 인해 귀하의 계정은 일시 제한되었습니다. 나중에 다시 시도해주세요."}
         else:
-            yield json.dumps({
-                "type": "blocked", 
-                "content": f"죄송합니다. 현재 제 범위를 벗어난 질문입니다. 다른 주제로 이야기해볼까요?"
-            }) + "\n"
-        return
+            remaining = 10 - new_violations
+            return {"response": f"죄송합니다. 현재 제 범위를 벗어난 질문입니다. 다른 이야기를 해볼까요?"}
+
+    if not DEEPSEEK_API_KEY:
+        raise HTTPException(status_code=500, detail="DEEPSEEK_API_KEY가 설정되지 않았습니다.")
+
+    # 3. DeepSeek API 호출
+    current_system_prompt = get_system_prompt()
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": current_system_prompt},
+            {"role": "user", "content": user_message}
+        ]
+    }
 
     try:
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {"role": "system", "content": SCHOOL_CONTEXT},
-                {"role": "user", "content": user_message}
-            ],
-            temperature=0.7,
-            stream=True
-        )
+        response = requests.post("https://api.deepseek.com/chat/completions", json=payload, headers=headers, timeout=15)
+        if response.status_code != 200:
+            return {"response": "AI 응답을 가져오는 데 실패했습니다."}
+            
+        bot_reply = response.json()["choices"][0]["message"]["content"]
 
-        accumulated_text = ""
+        # 4. AI 답변 금지어 2차 체크
+        if check_profanity(bot_reply):
+            return {"response": "죄송합니다. 제 답변 중에 부적절한 내용이 포함되어 있었습니다. 다른 주제로 이야기해볼까요?"}
 
-        for chunk in response:
-            if chunk.choices and chunk.choices[0].delta.content:
-                new_token = chunk.choices[0].delta.content
-                accumulated_text += new_token
+        return {"response": bot_reply}
 
-                # 2. 실시간 출력 검사
-                if check_words(accumulated_text, all_output_blocked):
-                    count = record_violation(device_id)
+    except Exception:
+        return {"response": "서버 오류가 발생했습니다."}
 
-                    if count >= MAX_ALLOWED_VIOLATIONS:
-                        yield json.dumps({
-                            "type": "banned", 
-                            "content": "이용 약관 위반으로 인해 귀하의 계정은 일시 정지되었습니다. 나중에 다시 시도해 주세요."
-                        }) + "\n"
-                    else:
-                        yield json.dumps({
-                            "type": "blocked", 
-                            "content":"죄송합니다. 제 답변 중에 부적절한 내용이 포함되어 있었습니다. 다른 주제로 이야기해볼까요?"
-                        }) + "\n"
-                    return
+# --- 5. 관리자 API ---
+ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "my-school-secret-1234")
 
-                yield json.dumps({"type": "token", "content": new_token}) + "\n"
-                await asyncio.sleep(0.02)
+class PromptUpdateRequest(BaseModel):
+    prompt: str
 
-    except Exception as e:
-        yield json.dumps({"type": "error", "content": "API 호출 중 오류가 발생했습니다."}) + "\n"
+@app.get("/admin/system-prompt")
+def read_system_prompt():
+    return {"system_prompt": get_system_prompt()}
 
-@app.post("/api/chat")
-async def chat_endpoint(request: ChatRequest):
-    user_message = request.message.strip()
-    device_id = request.device_id.strip()
+@app.post("/admin/system-prompt")
+def update_system_prompt(request: PromptUpdateRequest, x_admin_key: str = Header(None)):
+    if x_admin_key != ADMIN_SECRET_KEY:
+        raise HTTPException(status_code=403, detail="권한이 없습니다.")
+    db = SessionLocal()
+    try:
+        new_prompt = SystemPrompt(content=request.prompt.strip())
+        db.add(new_prompt)
+        db.commit()
+        return {"message": "시스템 프롬프트가 성공적으로 변경되었습니다.", "updated_prompt": request.prompt}
+    finally:
+        db.close()
 
-    if not user_message:
-        raise HTTPException(status_code=400, detail="메시지를 입력해주세요.")
-    if not device_id:
-        raise HTTPException(status_code=400, detail="잘못된 접근입니다.")
+@app.get("/admin/banned-words")
+def list_banned_words():
+    return {"banned_words": get_banned_words()}
 
-    return StreamingResponse(
-        generate_chat_stream(user_message, device_id),
-        media_type="application/x-ndjson"
-    )
+@app.post("/admin/banned-words")
+def add_banned_word(word: str, x_admin_key: str = Header(None)):
+    if x_admin_key != ADMIN_SECRET_KEY:
+        raise HTTPException(status_code=403, detail="권한이 없습니다.")
+    db = SessionLocal()
+    try:
+        word_clean = word.strip()
+        existing = db.query(BannedWord).filter(BannedWord.word == word_clean).first()
+        if existing:
+            return JSONResponse({"message": "이미 존재하는 금지어입니다."}, status_code=400)
+        new_word = BannedWord(word=word_clean)
+        db.add(new_word)
+        db.commit()
+        return {"message": f"'{word_clean}' 금지어가 성공적으로 추가되었습니다."}
+    finally:
+        db.close()
 
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+@app.delete("/admin/banned-words")
+def delete_banned_word(word: str, x_admin_key: str = Header(None)):
+    if x_admin_key != ADMIN_SECRET_KEY:
+        raise HTTPException(status_code=403, detail="권한이 없습니다.")
+    db = SessionLocal()
+    try:
+        word_clean = word.strip()
+        target = db.query(BannedWord).filter(BannedWord.word == word_clean).first()
+        if not target:
+            return JSONResponse({"message": "존재하지 않는 금지어입니다."}, status_code=404)
+        db.delete(target)
+        db.commit()
+        return {"message": f"'{word_clean}' 금지어가 삭제되었습니다."}
+    finally:
+        db.close()
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+@app.get("/admin/blocked-devices")
+def get_blocked_devices(x_admin_key: str = Header(None)):
+    if x_admin_key != ADMIN_SECRET_KEY:
+        raise HTTPException(status_code=403, detail="권한이 없습니다.")
+    db = SessionLocal()
+    try:
+        devices = db.query(UserDevice).all()
+        return [{"device_id": d.device_id, "violations": d.violations, "is_blocked": d.is_blocked} for d in devices]
+    finally:
+        db.close()
+
+@app.post("/admin/unblock-device")
+def unblock_device(device_id: str, x_admin_key: str = Header(None)):
+    if x_admin_key != ADMIN_SECRET_KEY:
+        raise HTTPException(status_code=403, detail="권한이 없습니다.")
+    db = SessionLocal()
+    try:
+        device = db.query(UserDevice).filter(UserDevice.device_id == device_id).first()
+        if not device:
+            return JSONResponse({"message": "해당 기기를 찾을 수 없습니다."}, status_code=404)
+        device.violations = 0
+        device.is_blocked = False
+        db.commit()
+        return {"message": f"기기('{device_id}') 차단이 해제되었습니다."}
+    finally:
+        db.close()

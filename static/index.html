@@ -137,6 +137,7 @@
   </div>
 
  <script>
+
   const chatMessages = document.getElementById('chatMessages');
   const userInput = document.getElementById('userInput');
   const sendBtn = document.getElementById('sendBtn');
@@ -182,14 +183,14 @@
 
     appendMessage(message, 'user');
     const aiMsgDiv = appendMessage('', 'ai');
-
+    const deviceId = getDeviceId();
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           message: message,
-          device_id: DEVICE_ID // 백엔드로 기기 ID 전송
+          device_id: deviceId // 백엔드로 기기 ID 전송
         })
       });
 
