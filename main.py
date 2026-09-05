@@ -56,18 +56,21 @@ class UserDevice(Base):
     violations = Column(Integer, default=0)
     is_blocked = Column(Boolean, default=False)
 
-Base.metadata.create_all(bind=engine)
 
-def init_system_prompt():
-    db = SessionLocal()
-    try:
-        if db.query(SystemPrompt).count() == 0:
-            db.add(SystemPrompt(content="너는 친절하고 유용한 학교 AI 도우미 챗봇이야. 학생들이 물어보는 질문에 정중하게 답변해줘."))
-            db.commit()
-    finally:
-        db.close()
-
-init_system_prompt()
+try:
+    Base.metadata.create_all(bind=engine)
+    def init_system_prompt():
+        db = SessionLocal()
+        try:
+            if db.query(SystemPrompt).count() == 0:
+                db.add(SystemPrompt(content="너는 친절하고 유용한 학교 AI 도우미 챗봇이야. 학생들이 물어보는 질문에 정중하게 답변해줘."))
+                db.commit()
+        finally:
+            db.close()
+    init_system_prompt()
+    print("✅ 데이터베이스 연결 및 초기화 성공!")
+except Exception as db_err:
+    print(f"⚠️ 데이터베이스 연결 실패 (서버는 켜집니다): {db_err}")
 
 # --- Helper 함수들 ---
 def get_banned_words():
