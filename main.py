@@ -1,5 +1,6 @@
 import os
 import requests
+import json
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -172,7 +173,7 @@ async def chat_endpoint(req: ChatRequest):
         raise HTTPException(status_code=500, detail="DEEPSEEK_API_KEY가 설정되지 않았습니다.")
 
     # ----------------------------------------------------
-    # [2단계] DeepSeek API 호출 준비 및 실행
+    # [2단계] DeepSeek API 스트리밍 호출 및 실시간 검열
     # ----------------------------------------------------
     current_system_prompt = get_system_prompt()
     headers = {
@@ -184,34 +185,65 @@ async def chat_endpoint(req: ChatRequest):
         "messages": [
             {"role": "system", "content": current_system_prompt},
             {"role": "user", "content": user_message}
-        ]
+        ],
+        "stream": True  # 💡 스트리밍 활성화!
     }
 
     try:
-        response = requests.post("https://api.deepseek.com/chat/completions", json=payload, headers=headers, timeout=15)
+        # stream=True를 주어 연결을 열고 실시간으로 조각(chunk)을 받습니다.
+        response = requests.post("https://api.deepseek.com/chat/completions", json=payload, headers=headers, stream=True, timeout=15)
         if response.status_code != 200:
             return {"response": "AI 응답을 가져오는 데 실패했습니다."}
             
-        ai_raw_response = response.json()["choices"][0]["message"]["content"]
-
-        # ----------------------------------------------------
-        # [3단계] 출력 검열 ('both' 및 'output' 타입 금지어 모두 대상 -> 출력 직후 즉시 차단)
-        # ----------------------------------------------------
         output_banned_words = get_banned_words(["both", "output"])
-        
-        for word in output_banned_words:
-            if word in ai_raw_response:
-                handle_device_violation(device_id, is_violation=True)
-                return {"response": "죄송합니다. 제 답변 중에 부적절한 내용이 포함되어 있었습니다. 다른 주제로 이야기 해볼까요?"}
+        full_reply = ""
+        is_violated = False
+
+        # 💡 스트림 데이터를 한 줄씩 실시간으로 읽기
+        for line in response.iter_lines():
+            if line:
+                line_str = line.decode('utf-8')
+                if line_str.startswith("data: "):
+                    data_str = line_str[6:]
+                    
+                    # 스트리밍 종료 신호인 경우 탈출
+                    if data_str.strip() == "[DONE]":
+                        break
+                        
+                    try:
+                        chunk_json = json.loads(data_str)
+                        delta = chunk_json["choices"][0].get("delta", {})
+                        content = delta.get("content", "")
+                        
+                        if content:
+                            full_reply += content
+                            
+                            # 💡 [핵심] 생성되는 도중 실시간으로 금지어 포함 여부 검사!
+                            for word in output_banned_words:
+                                if word in full_reply:
+                                    is_violated = True
+                                    break
+                            
+                            # 금지어가 걸리면 즉시 루프(생성)를 강제 중단합니다!
+                            if is_violated:
+                                break
+                    except json.JSONDecodeError:
+                        pass
 
         # ----------------------------------------------------
-        # [4단계] 모든 검열 통과 시 정상 답변 반환
+        # [3단계] 생성 중 금지어 감지 여부에 따른 분기 처리
         # ----------------------------------------------------
-        return {"response": ai_raw_response}
+        if is_violated:
+            handle_device_violation(device_id, is_violation=True)
+            return {"response": "죄송합니다. 제 답변 중에 부적절한 내용이 포함되어 있었습니다. 다른 주제로 이야기 해볼까요?"}
 
-    except Exception:
+        # ----------------------------------------------------
+        # [4단계] 정상 완료된 경우 답변 반환
+        # ----------------------------------------------------
+        return {"response": full_reply}
+
+    except Exception as e:
         return {"response": "서버 오류가 발생했습니다."}
-
 # --- 5. 관리자 API ---
 ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "my-school-secret-1234")
 
