@@ -5,9 +5,28 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker
 from pydantic import BaseModel
+print("--- 1. FastAPI 앱 초기화 시작 ---")
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 서버가 켜질 때 실행
+    print("서버 시작 중: DB 연결 확인...")
+    try:
+        # DB 테이블 생성 코드가 있다면 이 안으로 이동
+        # Base.metadata.create_all(bind=engine)
+        print("DB 연결 성공!")
+    except Exception as e:
+        print(f"DB 연결 실패: {e}")
+    
+    yield
+    
+    # 서버가 꺼질 때 실행
+    print("서버 종료")
 
+app = FastAPI(lifespan=lifespan)
+print("--- 2. DB 엔진 설정 시작 ---")
 # --- 1. Supabase PostgreSQL DB 연결 ---
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./fallback.db")
 if DATABASE_URL.startswith("postgres://"):
