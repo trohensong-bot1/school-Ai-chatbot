@@ -1,4 +1,5 @@
 fastapi
 uvicorn
-openai
-pydantic
+requests
+psycopg2-binary
+sqlalchemy
