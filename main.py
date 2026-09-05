@@ -2,6 +2,8 @@ import os
 import requests
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker
 from pydantic import BaseModel
@@ -26,6 +28,13 @@ async def lifespan(app: FastAPI):
     print("서버 종료")
 
 app = FastAPI(lifespan=lifespan)
+# 1. static 폴더 안의 파일들(css, js 등)을 웹에서 접근할 수 있게 열어줍니다.
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# 2. 메인 주소("/")로 접속했을 때 static/index.html을 반환합니다.
+@app.get("/")
+def read_root():
+    return FileResponse("static/index.html")
 print("--- 2. DB 엔진 설정 시작 ---")
 # --- 1. Supabase PostgreSQL DB 연결 ---
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./fallback.db")
