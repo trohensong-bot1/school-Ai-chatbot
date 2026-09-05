@@ -218,17 +218,20 @@ function typeText(element, text, speed = 25, callback) {
       
       if (data.response) {
         // 차단 또는 경고 관련 문구가 수신된 경우 (경고는 타이핑 없이 바로 보여주거나 타이핑 적용 가능)
-        if (data.response.includes("🚫")) {
+        if (data.response.includes("범위를 벗어난") || 
+          data.response.includes("부적절한 내용") || 
+          data.response.includes("일시 제한되었습니다") ||
+          data.response.includes("일시 제한")) {
           aiMsgDiv.className = 'message blocked';
           aiMsgDiv.innerText = data.response;
           
-          if (data.response.includes("영구 차단")) {
+          if (data.response.includes("일시 제한")) {
             userInput.placeholder = "이용이 제한된 계정입니다.";
             userInput.disabled = true;
             sendBtn.disabled = true;
             return;
           }
-        } else if (data.response.includes("⚠️")) {
+        } else if (data.response.includes("부적절한 내용")) {
           aiMsgDiv.className = 'message blocked';
           aiMsgDiv.innerText = data.response;
         } else {
