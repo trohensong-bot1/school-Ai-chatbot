@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>하안북중학교 AI 도우미 </title>
+  <title>하안북중학교 AI 도우미</title>
   <style>
     * {
       box-sizing: border-box;
@@ -136,8 +136,7 @@
     </div>
   </div>
 
- <script>
-
+<script>
   const chatMessages = document.getElementById('chatMessages');
   const userInput = document.getElementById('userInput');
   const sendBtn = document.getElementById('sendBtn');
@@ -151,8 +150,6 @@
     }
     return deviceId;
   }
-
-  const DEVICE_ID = getDeviceId();
 
   function scrollToBottom() {
     chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -182,15 +179,17 @@
     sendBtn.disabled = true;
 
     appendMessage(message, 'user');
-    const aiMsgDiv = appendMessage('', 'ai');
+    const aiMsgDiv = appendMessage('답변을 생각 중입니다...', 'ai');
     const deviceId = getDeviceId();
+
     try {
-      const response = await fetch('/api/chat', {
+      // [수정 포인트 1] /api/chat -> /chat으로 경로 변경
+      const response = await fetch('/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           message: message,
-          device_id: deviceId // 백엔드로 기기 ID 전송
+          device_id: deviceId
         })
       });
 
@@ -200,59 +199,36 @@
         return;
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop();
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-
-          try {
-            const data = JSON.parse(line);
-
-            if (data.type === 'token' && data.content) {
-              aiMsgDiv.innerText += data.content;
-              scrollToBottom();
-            } else if (data.type === 'blocked') {
-              aiMsgDiv.className = 'message blocked';
-              aiMsgDiv.innerText = data.content;
-              scrollToBottom();
-              return;
-            } else if (data.type === 'banned') {
-              // 10회 경고 누적으로 기기 영구 차단 시 처리
-              aiMsgDiv.className = 'message blocked';
-              aiMsgDiv.innerText = data.content;
-              
-              // 입력 창 아예 비활성화
-              userInput.placeholder = "이용이 제한된 계정입니다.";
-              userInput.disabled = true;
-              sendBtn.disabled = true;
-              scrollToBottom();
-              return;
-            } else if (data.type === 'error') {
-              aiMsgDiv.className = 'message blocked';
-              aiMsgDiv.innerText = data.content;
-              return;
-            }
-          } catch (e) {
-            console.error("JSON Parsing Error:", e);
+      // [수정 포인트 2] 스트리밍 대신 JSON 객체 로드 처리
+      const data = await response.json();
+      
+      if (data.response) {
+        // 차단 또는 경고 관련 문구가 수신된 경우 UI 처리
+        if (data.response.includes("🚫")) {
+          aiMsgDiv.className = 'message blocked';
+          aiMsgDiv.innerText = data.response;
+          
+          if (data.response.includes("영구 차단")) {
+            userInput.placeholder = "이용이 제한된 계정입니다.";
+            userInput.disabled = true;
+            sendBtn.disabled = true;
+            return;
           }
+        } else if (data.response.includes("⚠️")) {
+          aiMsgDiv.className = 'message blocked';
+          aiMsgDiv.innerText = data.response;
+        } else {
+          aiMsgDiv.innerText = data.response;
         }
+      } else {
+        aiMsgDiv.className = 'message blocked';
+        aiMsgDiv.innerText = '응답 형식이 올바르지 않습니다.';
       }
 
     } catch (error) {
       aiMsgDiv.className = 'message blocked';
       aiMsgDiv.innerText = '서버에 연결할 수 없습니다.';
     } finally {
-      // 차단당한 상태가 아니라면 입력창 재활성화
       if (userInput.placeholder !== "이용이 제한된 계정입니다.") {
         userInput.disabled = false;
         sendBtn.disabled = false;
