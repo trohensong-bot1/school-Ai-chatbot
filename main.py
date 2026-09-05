@@ -88,10 +88,19 @@ except Exception as db_err:
     print(f"⚠️ 데이터베이스 연결 실패 (서버는 켜집니다): {db_err}")
 
 # --- Helper 함수들 ---
-def get_banned_words():
+def get_banned_words(word_type=None):
     db = SessionLocal()
     try:
-        words = db.query(BannedWord.word).all()
+        query = db.query(BannedWord.word)
+        
+        # 만약 특정 타입(문자열 또는 리스트)이 지정되면 조건에 맞게 필터링
+        if word_type:
+            if isinstance(word_type, list):
+                query = query.filter(BannedWord.type.in_(word_type))
+            else:
+                query = query.filter(BannedWord.type == word_type)
+                
+        words = query.all()
         return [w[0] for w in words]
     finally:
         db.close()
@@ -105,7 +114,7 @@ def get_system_prompt():
         db.close()
 
 # [최적화] DB를 단 1번만 열어서 금지어 포함 여부 검사
-def check_profanity(text: str) -> bool:
+def check_profanity(text: str, word_type = None) -> bool:
     banned_words = get_banned_words()
     for word in banned_words:
         if word in text:
@@ -151,6 +160,71 @@ class ChatRequest(BaseModel):
     device_id: str = "unknown_device"
 
 @app.post("/chat")
+async def chat_endpoint(req: ChatRequest):
+    device_id = req.device_id.strip()
+    user_message = req.message.strip()
+
+    # 0. 계정 차단 여부 먼저 확인
+    is_blocked, current_violations = handle_device_violation(device_id, is_violation=False)
+    if is_blocked:
+        return {"response": "이용 약관 위반으로 인해 귀하의 계정은 일시 제한되었습니다. 나중에 다시 시도해주세요."}
+
+    # ----------------------------------------------------
+    # [1단계] 사용자 입력 검열 ('both' 타입 금지어만 대상)
+    # ----------------------------------------------------
+    both_banned_words = get_banned_words("both") 
+    
+    for word in both_banned_words:
+        if word in user_message:
+            # DeepSeek을 부르기 전에 즉시 차단!
+            handle_device_violation(device_id, is_violation=True)
+            return {"response": "죄송합니다. 현재 제 범위를 벗어난 질문입니다. 다른 이야기를 해볼까요?"}
+
+    if not DEEPSEEK_API_KEY:
+        raise HTTPException(status_code=500, detail="DEEPSEEK_API_KEY가 설정되지 않았습니다.")
+
+    # ----------------------------------------------------
+    # [2단계] DeepSeek API 호출 준비 및 실행
+    # ----------------------------------------------------
+    current_system_prompt = get_system_prompt()
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": current_system_prompt},
+            {"role": "user", "content": user_message}
+        ]
+    }
+
+    try:
+        # 💡 call_deepseek_api 대신 원래 쓰시던 requests.post 코드를 정확히 배치했습니다!
+        response = requests.post("https://api.deepseek.com/chat/completions", json=payload, headers=headers, timeout=15)
+        if response.status_code != 200:
+            return {"response": "AI 응답을 가져오는 데 실패했습니다."}
+            
+        ai_raw_response = response.json()["choices"][0]["message"]["content"]
+
+        # ----------------------------------------------------
+        # [3단계] 출력 검열 ('both' 및 'output' 타입 금지어 모두 대상)
+        # ----------------------------------------------------
+        output_banned_words = get_banned_words(["both", "output"])
+        
+        for word in output_banned_words:
+            if word in ai_raw_response:
+                # AI 답변에 금지어가 포함된 경우 즉시 차단 메시지로 교체!
+                handle_device_violation(device_id, is_violation=True)
+                return {"response": "죄송합니다. 제 답변 중에 부적절한 내용이 포함되어 있었습니다. 다른 주제로 이야기 해볼까요?"}
+
+        # ----------------------------------------------------
+        # [4단계] 모든 검열 통과 시 정상 답변 반환
+        # ----------------------------------------------------
+        return {"response": ai_raw_response}
+
+    except Exception:
+        return {"response": "서버 오류가 발생했습니다."}
 def chat_endpoint(request: ChatRequest):
     device_id = request.device_id.strip()
     user_message = request.message.strip()
@@ -160,8 +234,8 @@ def chat_endpoint(request: ChatRequest):
     if is_blocked:
         return {"response": "이용 약관 위반으로 인해 귀하의 계정은 일시 제한되었습니다. 나중에 다시 시도해주세요."}
 
-    # 2. 사용자 메시지 금지어 체크
-    if check_profanity(user_message):
+    # 2. 사용자 메시지 금지어 체크 (💡 입력 시에는 'both' 타입만 검사!)
+    if check_profanity(user_message, word_type="both"):
         is_now_blocked, new_violations = handle_device_violation(device_id, is_violation=True)
         if is_now_blocked:
             return {"response": "이용 약관 위반으로 인해 귀하의 계정은 일시 제한되었습니다. 나중에 다시 시도해주세요."}
@@ -192,8 +266,10 @@ def chat_endpoint(request: ChatRequest):
             
         bot_reply = response.json()["choices"][0]["message"]["content"]
 
-        # 4. AI 답변 금지어 2차 체크
-        if check_profanity(bot_reply):
+        # 4. AI 답변 금지어 2차 체크 (💡 출력 시에는 'both'와 'output' 모두 검사!)
+        if check_profanity(bot_reply, word_type=["both", "output"]):
+            # 필요하다면 출력 위반 시에도 위반 카운트를 올릴 수 있습니다.
+            handle_device_violation(device_id, is_violation=True)
             return {"response": "죄송합니다. 제 답변 중에 부적절한 내용이 포함되어 있었습니다. 다른 주제로 이야기해볼까요?"}
 
         return {"response": bot_reply}
