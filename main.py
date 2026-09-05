@@ -65,6 +65,7 @@ def get_system_prompt():
     finally:
         db.close()
 
+# [최적화] DB를 단 1번만 열어서 금지어 포함 여부 검사
 def check_profanity(text: str) -> bool:
     banned_words = get_banned_words()
     for word in banned_words:
@@ -126,8 +127,7 @@ def chat_endpoint(request: ChatRequest):
         if is_now_blocked:
             return {"response": "이용 약관 위반으로 인해 귀하의 계정은 일시 제한되었습니다. 나중에 다시 시도해주세요."}
         else:
-            remaining = 10 - new_violations
-            return {"response": f"죄송합니다. 현재 제 범위를 벗어난 질문입니다. 다른 이야기를 해볼까요?"}
+            return {"response": "죄송합니다. 현재 제 범위를 벗어난 질문입니다. 다른 이야기를 해볼까요?"}
 
     if not DEEPSEEK_API_KEY:
         raise HTTPException(status_code=500, detail="DEEPSEEK_API_KEY가 설정되지 않았습니다.")
