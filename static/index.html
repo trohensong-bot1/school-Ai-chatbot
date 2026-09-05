@@ -150,7 +150,21 @@
     }
     return deviceId;
   }
-
+function typeText(element, text, speed = 25, callback) {
+    let i = 0;
+    element.innerText = ""; // 처음 "답변을 생각 중입니다..." 텍스트를 비워줌
+    
+    function typing() {
+        if (i < text.length) {
+            element.innerText += text.charAt(i);
+            i++;
+            setTimeout(typing, speed); // 숫자가 작을수록 타이핑 속도가 빨라집니다.
+        } else if (callback) {
+            callback(); // 타이핑이 모두 끝난 뒤 실행할 동작
+        }
+    }
+    typing();
+}
   function scrollToBottom() {
     chatMessages.scrollTop = chatMessages.scrollHeight;
   }
@@ -183,7 +197,6 @@
     const deviceId = getDeviceId();
 
     try {
-      // [수정 포인트 1] /api/chat -> /chat으로 경로 변경
       const response = await fetch('/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -199,11 +212,10 @@
         return;
       }
 
-      // [수정 포인트 2] 스트리밍 대신 JSON 객체 로드 처리
       const data = await response.json();
       
       if (data.response) {
-        // 차단 또는 경고 관련 문구가 수신된 경우 UI 처리
+        // 차단 또는 경고 관련 문구가 수신된 경우 (경고는 타이핑 없이 바로 보여주거나 타이핑 적용 가능)
         if (data.response.includes("🚫")) {
           aiMsgDiv.className = 'message blocked';
           aiMsgDiv.innerText = data.response;
@@ -218,7 +230,8 @@
           aiMsgDiv.className = 'message blocked';
           aiMsgDiv.innerText = data.response;
         } else {
-          aiMsgDiv.innerText = data.response;
+          // 💡 [핵심 변경 부분] 일반 AI 응답일 때 타이핑 효과 적용!
+          typeText(aiMsgDiv, data.response, 25);
         }
       } else {
         aiMsgDiv.className = 'message blocked';
@@ -229,6 +242,8 @@
       aiMsgDiv.className = 'message blocked';
       aiMsgDiv.innerText = '서버에 연결할 수 없습니다.';
     } finally {
+      // 💡 주의: 타이핑 효과가 진행되는 동안 입력창이 바로 풀리는 것을 원치 않으시면 
+      // finally 블록의 입력창 활성화 코드를 typeText의 callback 함수 안으로 이동시킬 수도 있습니다.
       if (userInput.placeholder !== "이용이 제한된 계정입니다.") {
         userInput.disabled = false;
         sendBtn.disabled = false;
