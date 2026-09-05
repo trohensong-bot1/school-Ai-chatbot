@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>하안북중학교 AI 도우미 </title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    body {
+      background-color: #f2f2f7;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+    }
+
+    .chat-container {
+      width: 100%;
+      max-width: 480px;
+      height: 100vh;
+      background-color: #ffffff;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 0 20px rgba(0, 0, 0, 0.05);
+    }
+
+    .chat-header {
+      padding: 16px;
+      background-color: #ffffff;
+      border-bottom: 1px solid #e5e5ea;
+      text-align: center;
+      font-weight: 600;
+      font-size: 18px;
+      color: #1c1c1e;
+    }
+
+    .chat-messages {
+      flex: 1;
+      padding: 16px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      background-color: #f9f9fb;
+    }
+
+    .message {
+      max-width: 75%;
+      padding: 12px 16px;
+      border-radius: 18px;
+      font-size: 15px;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    .message.user {
+      align-self: flex-end;
+      background-color: #007aff;
+      color: #ffffff;
+      border-bottom-right-radius: 4px;
+    }
+
+    .message.ai {
+      align-self: flex-start;
+      background-color: #e9e9eb;
+      color: #000000;
+      border-bottom-left-radius: 4px;
+    }
+
+    .message.blocked {
+      align-self: center;
+      background-color: #ffe5e5;
+      color: #d32f2f;
+      font-size: 13px;
+      border-radius: 12px;
+      text-align: center;
+      max-width: 90%;
+    }
+
+    .chat-input-area {
+      padding: 12px 16px;
+      background-color: #ffffff;
+      border-top: 1px solid #e5e5ea;
+      display: flex;
+      gap: 8px;
+    }
+
+    .chat-input-area input {
+      flex: 1;
+      padding: 12px 16px;
+      border: 1px solid #d1d1d6;
+      border-radius: 20px;
+      font-size: 15px;
+      outline: none;
+    }
+
+    .chat-input-area input:focus {
+      border-color: #007aff;
+    }
+
+    .chat-input-area button {
+      padding: 12px 18px;
+      background-color: #007aff;
+      color: #ffffff;
+      border: none;
+      border-radius: 20px;
+      font-weight: 600;
+      font-size: 15px;
+      cursor: pointer;
+    }
+
+    .chat-input-area button:disabled {
+      background-color: #b0b0b5;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="chat-container">
+    <div class="chat-header">학교 AI 도우미</div>
+    
+    <div class="chat-messages" id="chatMessages">
+      <div class="message ai">안녕하세요! 우리 학교에 대해 궁금한 점을 물어보세요.</div>
+    </div>
+
+    <div class="chat-input-area">
+      <input type="text" id="userInput" placeholder="메시지를 입력하세요..." onkeypress="handleKeyPress(event)">
+      <button id="sendBtn" onclick="sendMessage()">전송</button>
+    </div>
+  </div>
+
+ <script>
+  const chatMessages = document.getElementById('chatMessages');
+  const userInput = document.getElementById('userInput');
+  const sendBtn = document.getElementById('sendBtn');
+
+  // 기기 고유 ID 생성 및 불러오기 함수 (UUID)
+  function getDeviceId() {
+    let deviceId = localStorage.getItem('chat_device_id');
+    if (!deviceId) {
+      deviceId = 'device_' + Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+      localStorage.setItem('chat_device_id', deviceId);
+    }
+    return deviceId;
+  }
+
+  const DEVICE_ID = getDeviceId();
+
+  function scrollToBottom() {
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
+
+  function appendMessage(text, type) {
+    const msgDiv = document.createElement('div');
+    msgDiv.classList.add('message', type);
+    msgDiv.innerText = text;
+    chatMessages.appendChild(msgDiv);
+    scrollToBottom();
+    return msgDiv;
+  }
+
+  function handleKeyPress(event) {
+    if (event.key === 'Enter') {
+      sendMessage();
+    }
+  }
+
+  async function sendMessage() {
+    const message = userInput.value.trim();
+    if (!message) return;
+
+    userInput.value = '';
+    userInput.disabled = true;
+    sendBtn.disabled = true;
+
+    appendMessage(message, 'user');
+    const aiMsgDiv = appendMessage('', 'ai');
+
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          message: message,
+          device_id: DEVICE_ID // 백엔드로 기기 ID 전송
+        })
+      });
+
+      if (!response.ok) {
+        aiMsgDiv.className = 'message blocked';
+        aiMsgDiv.innerText = '서버 응답 오류가 발생했습니다.';
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+
+          try {
+            const data = JSON.parse(line);
+
+            if (data.type === 'token' && data.content) {
+              aiMsgDiv.innerText += data.content;
+              scrollToBottom();
+            } else if (data.type === 'blocked') {
+              aiMsgDiv.className = 'message blocked';
+              aiMsgDiv.innerText = data.content;
+              scrollToBottom();
+              return;
+            } else if (data.type === 'banned') {
+              // 10회 경고 누적으로 기기 영구 차단 시 처리
+              aiMsgDiv.className = 'message blocked';
+              aiMsgDiv.innerText = data.content;
+              
+              // 입력 창 아예 비활성화
+              userInput.placeholder = "이용이 제한된 계정입니다.";
+              userInput.disabled = true;
+              sendBtn.disabled = true;
+              scrollToBottom();
+              return;
+            } else if (data.type === 'error') {
+              aiMsgDiv.className = 'message blocked';
+              aiMsgDiv.innerText = data.content;
+              return;
+            }
+          } catch (e) {
+            console.error("JSON Parsing Error:", e);
+          }
+        }
+      }
+
+    } catch (error) {
+      aiMsgDiv.className = 'message blocked';
+      aiMsgDiv.innerText = '서버에 연결할 수 없습니다.';
+    } finally {
+      // 차단당한 상태가 아니라면 입력창 재활성화
+      if (userInput.placeholder !== "이용이 제한된 계정입니다.") {
+        userInput.disabled = false;
+        sendBtn.disabled = false;
+        userInput.focus();
+      }
+    }
+  }
+</script>
+</body>
+</html>
