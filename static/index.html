@@ -399,6 +399,80 @@
       }
     }
   }
+  async function getDeviceAndOSInfo() {
+  let osVersion = "Unknown OS";
+  let deviceModel = "Unknown Device";
+
+  // 1. 최신 Client Hints API 지원 여부 확인 (Chrome, Edge 등)
+  if (navigator.userAgentData) {
+    try {
+      const uaData = await navigator.userAgentData.getHighEntropyValues([
+        "platform",
+        "platformVersion",
+        "model",
+        "fullVersionList"
+      ]);
+      
+      // OS 및 버전
+      osVersion = `${uaData.platform} ${uaData.platformVersion}`;
+      
+      // 기기 모델 (모바일 기기 등에서 주로 제공)
+      if (uaData.model) {
+        deviceModel = uaData.model;
+      }
+    } catch (e) {
+      console.log("Client Hints API failed, falling back to User-Agent");
+    }
+  }
+
+  // 2. Client Hints로 모델을 못 가져왔거나 사파리 등 구형 방식이 필요한 경우
+  const ua = navigator.userAgent;
+  if (deviceModel === "Unknown Device") {
+    if (/iPhone/.test(ua)) deviceModel = "iPhone";
+    else if (/iPad/.test(ua)) deviceModel = "iPad";
+    else if (/Android/.test(ua)) {
+      // 안드로이드 기기명 추출 시도
+      const match = ua.match(/\(([^)]+)\)/);
+      if (match) {
+        const parts = match[1].split(";");
+        // 보통 안드로이드 UA 문자열의 중간 부근에 기기 모델명이 포함됨
+        const potentialModel = parts.find(p => p.includes("Build") || p.includes("Mobile") || p.includes("SM-") || p.includes("Pixel"));
+        deviceModel = potentialModel ? potentialModel.trim() : "Android Device";
+      }
+    } else {
+      deviceModel = "PC / Desktop";
+    }
+  }
+
+  // OS 버전이 여전히 미상이면 UA 문자열 기반으로 대략적인 파싱
+  if (osVersion === "Unknown OS") {
+    if (/Windows NT 10.0/.test(ua)) osVersion = "Windows 10/11";
+    else if (/Mac OS X/.test(ua)) {
+      const match = ua.match(/Mac OS X ([_,\d]+)/);
+      osVersion = match ? `macOS ${match[1].replace(/_/g, '.')}` : "macOS";
+    } else if (/like Mac OS X/.test(ua)) {
+      const match = ua.match(/CPU OS ([_\d]+) like Mac OS X/);
+      osVersion = match ? `iOS ${match[1].replace(/_/g, '.')}` : "iOS";
+    } else if (/Android/.test(ua)) {
+      const match = ua.match(/Android ([\d.]+)/);
+      osVersion = match ? `Android ${match[1]}` : "Android";
+    }
+  }
+
+  return { deviceModel, osVersion };
+}
+
+// 예시: 서버로 보낼 때 사용
+async function sendDeviceInfoToServer() {
+  const info = await getDeviceAndOSInfo();
+  
+  // FastAPI 서버의 기기 정보 저장 엔드포인트로 전송
+  fetch('/api/device', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(info)
+  });
+}
   // 모달 열기
   function openModal(type) {
     if (type === 'terms') {

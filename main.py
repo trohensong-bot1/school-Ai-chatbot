@@ -1,11 +1,11 @@
 ﻿import os
 import json
 import requests
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 
@@ -49,6 +49,9 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # --- 2. DB 테이블 모델 정의 ---
+class DeviceInfo(BaseModel):
+    deviceModel: str
+    osVersion: str
 class BannedWord(Base):
     __tablename__ = "banned_words"
     id = Column(Integer, primary_key=True, index=True)
@@ -98,7 +101,12 @@ def get_banned_words(word_type=None):
         return [w[0] for w in words]
     finally:
         db.close()
-
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 def get_system_prompt():
     db = SessionLocal()
     try:
@@ -314,6 +322,14 @@ def unblock_device(device_id: str, x_admin_key: str = Header(None)):
         return {"message": f"기기('{device_id}') 차단이 해제되었습니다."}
     finally:
         db.close()
+@app.post("/api/device")
+def save_device_info(info: DeviceInfo, db: Session = Depends(get_db)):
+    # DB의 user_devices 테이블에 저장하는 로직
+    # db_device = UserDevice(device_model=info.deviceModel, os_version=info.osVersion)
+    # db.add(db_device)
+    # db.commit()
+    
+    return {"status": "success", "model": info.deviceModel, "os": info.osVersion}
 
 if __name__ == "__main__":
     import uvicorn
