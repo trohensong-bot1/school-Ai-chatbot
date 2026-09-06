@@ -2,7 +2,7 @@ import os
 import requests
 import json
 from fastapi import FastAPI, HTTPException, Header
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean
@@ -159,11 +159,8 @@ async def chat_endpoint(req: ChatRequest):
     if is_blocked:
         return {"response": "이용 약관 위반으로 인해 귀하의 계정은 일시 제한되었습니다. 나중에 다시 시도해주세요."}
 
-    # ----------------------------------------------------
-    # [1단계] 사용자 입력 검열 ('both' 타입 금지어만 대상 -> AI 호출 전 즉시 차단)
-    # ----------------------------------------------------
+    # 1. 사용자 입력 검열 ('both' 타입 금지어) -> AI 호출 전 즉시 차단
     both_banned_words = get_banned_words("both") 
-    
     for word in both_banned_words:
         if word in user_message:
             handle_device_violation(device_id, is_violation=True)
@@ -172,9 +169,6 @@ async def chat_endpoint(req: ChatRequest):
     if not DEEPSEEK_API_KEY:
         raise HTTPException(status_code=500, detail="DEEPSEEK_API_KEY가 설정되지 않았습니다.")
 
-    # ----------------------------------------------------
-    # [2단계] DeepSeek API 스트리밍 호출 및 실시간 검열
-    # ----------------------------------------------------
     current_system_prompt = get_system_prompt()
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
@@ -186,64 +180,58 @@ async def chat_endpoint(req: ChatRequest):
             {"role": "system", "content": current_system_prompt},
             {"role": "user", "content": user_message}
         ],
-        "stream": True  # 💡 스트리밍 활성화!
+        "stream": True
     }
 
-    try:
-        # stream=True를 주어 연결을 열고 실시간으로 조각(chunk)을 받습니다.
-        response = requests.post("https://api.deepseek.com/chat/completions", json=payload, headers=headers, stream=True, timeout=15)
-        if response.status_code != 200:
-            return {"response": "AI 응답을 가져오는 데 실패했습니다."}
-            
-        output_banned_words = get_banned_words(["both", "output"])
-        full_reply = ""
-        is_violated = False
+    # 💡 실시간 스트리밍 제너레이터 함수
+    def generate_stream():
+        try:
+            response = requests.post("https://api.deepseek.com/chat/completions", json=payload, headers=headers, stream=True, timeout=15)
+            if response.status_code != 200:
+                yield "AI 응답을 가져오는 데 실패했습니다."
+                return
+                
+            output_banned_words = get_banned_words(["both", "output"])
+            full_reply = ""
+            is_violated = False
 
-        # 💡 스트림 데이터를 한 줄씩 실시간으로 읽기
-        for line in response.iter_lines():
-            if line:
-                line_str = line.decode('utf-8')
-                if line_str.startswith("data: "):
-                    data_str = line_str[6:]
-                    
-                    # 스트리밍 종료 신호인 경우 탈출
-                    if data_str.strip() == "[DONE]":
-                        break
-                        
-                    try:
-                        chunk_json = json.loads(data_str)
-                        delta = chunk_json["choices"][0].get("delta", {})
-                        content = delta.get("content", "")
-                        
-                        if content:
-                            full_reply += content
+            for line in response.iter_lines():
+                if line:
+                    line_str = line.decode('utf-8')
+                    if line_str.startswith("data: "):
+                        data_str = line_str[6:]
+                        if data_str.strip() == "[DONE]":
+                            break
                             
-                            # 💡 [핵심] 생성되는 도중 실시간으로 금지어 포함 여부 검사!
-                            for word in output_banned_words:
-                                if word in full_reply:
-                                    is_violated = True
-                                    break
+                        try:
+                            chunk_json = json.loads(data_str)
+                            delta = chunk_json["choices"][0].get("delta", {})
+                            content = delta.get("content", "")
                             
-                            # 금지어가 걸리면 즉시 루프(생성)를 강제 중단합니다!
-                            if is_violated:
-                                break
-                    except json.JSONDecodeError:
-                        pass
+                            if content:
+                                full_reply += content
+                                
+                                # 실시간 검열 수행
+                                for word in output_banned_words:
+                                    if word in full_reply:
+                                        is_violated = True
+                                        break
+                                
+                                if is_violated:
+                                    # 위반 시 생성 중단 및 차단 문구 전송
+                                    handle_device_violation(device_id, is_violation=True)
+                                    yield "죄송합니다. 제 답변 중에 부적절한 내용이 포함되어 있었습니다. 다른 주제로 이야기 해볼까요?"
+                                    return
+                                    
+                                # 위반이 없으면 생성되는 조각을 프론트엔드로 실시간 송출
+                                yield content
+                        except json.JSONDecodeError:
+                            pass
+        except Exception:
+            yield "서버 오류가 발생했습니다."
 
-        # ----------------------------------------------------
-        # [3단계] 생성 중 금지어 감지 여부에 따른 분기 처리
-        # ----------------------------------------------------
-        if is_violated:
-            handle_device_violation(device_id, is_violation=True)
-            return {"response": "죄송합니다. 제 답변 중에 부적절한 내용이 포함되어 있었습니다. 다른 주제로 이야기 해볼까요?"}
-
-        # ----------------------------------------------------
-        # [4단계] 정상 완료된 경우 답변 반환
-        # ----------------------------------------------------
-        return {"response": full_reply}
-
-    except Exception as e:
-        return {"response": "서버 오류가 발생했습니다."}
+    # 프론트엔드로 텍스트 조각들을 실시간 스트림으로 반환
+    return StreamingResponse(generate_stream(), media_type="text/plain; charset=utf-8")
 # --- 5. 관리자 API ---
 ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "my-school-secret-1234")
 
