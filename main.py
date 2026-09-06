@@ -1,10 +1,9 @@
-import os
-import requests
+﻿import os
 import json
+import requests
 from fastapi import FastAPI, HTTPException, Header
-from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker
 from pydantic import BaseModel
@@ -14,7 +13,6 @@ print("--- 1. FastAPI 앱 초기화 시작 ---")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 서버가 켜질 때 실행
     print("서버 시작 중: DB 연결 확인...")
     try:
         print("DB 연결 성공!")
@@ -23,29 +21,30 @@ async def lifespan(app: FastAPI):
     
     yield
     
-    # 서버가 꺼질 때 실행
     print("서버 종료")
 
 app = FastAPI(lifespan=lifespan)
 
-# 1. static 폴더 안의 파일들(css, js 등)을 웹에서 접근할 수 있게 열어줍니다.
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# static 폴더 마운트 (static/index.html 등 서빙용)
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
 
 print("--- 2. DB 엔진 설정 시작 ---")
-# --- 1. Supabase PostgreSQL DB 연결 ---
+# --- 1. DB 연결 (로컬에서는 fallback.db 사용, 배포 환경에서는 Supabase URL 자동 사용) ---
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./fallback.db")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
 if "sqlite" in DATABASE_URL:
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 else:
-    # PostgreSQL (Supabase) 연결 설정에 sslmode 추가
     engine = create_engine(
         DATABASE_URL, 
         pool_pre_ping=True, 
         pool_recycle=300,
         connect_args={"sslmode": "require"}
     )
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -88,14 +87,11 @@ def get_banned_words(word_type=None):
     db = SessionLocal()
     try:
         query = db.query(BannedWord.word)
-        
-        # 만약 특정 타입(문자열 또는 리스트)이 지정되면 조건에 맞게 필터링
         if word_type:
             if isinstance(word_type, list):
                 query = query.filter(BannedWord.type.in_(word_type))
             else:
                 query = query.filter(BannedWord.type == word_type)
-                
         words = query.all()
         return [w[0] for w in words]
     finally:
@@ -142,7 +138,7 @@ def read_root():
             return f.read()
     return "<h1>index.html 파일을 찾을 수 없습니다.</h1>"
 
-# --- 4. 챗봇 API (/chat) ---
+# --- 4. 챗봇 API (/chat) - 실시간 스트리밍 및 즉시 차단 ---
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 
 class ChatRequest(BaseModel):
@@ -154,17 +150,17 @@ async def chat_endpoint(req: ChatRequest):
     device_id = req.device_id.strip()
     user_message = req.message.strip()
 
-    # 0. 계정 차단 여부 먼저 확인
+    # 0. 계정 차단 여부 확인
     is_blocked, current_violations = handle_device_violation(device_id, is_violation=False)
     if is_blocked:
-        return {"response": "이용 약관 위반으로 인해 귀하의 계정은 일시 제한되었습니다. 나중에 다시 시도해주세요."}
+        return StreamingResponse(iter(["이용 약관 위반으로 인해 귀하의 계정은 일시 제한되었습니다. 나중에 다시 시도해주세요."]), media_type="text/plain; charset=utf-8")
 
     # 1. 사용자 입력 검열 ('both' 타입 금지어) -> AI 호출 전 즉시 차단
     both_banned_words = get_banned_words("both") 
     for word in both_banned_words:
         if word in user_message:
             handle_device_violation(device_id, is_violation=True)
-            return {"response": "죄송합니다. 현재 제 범위를 벗어난 질문입니다. 다른 이야기를 해볼까요?"}
+            return StreamingResponse(iter(["죄송합니다. 현재 제 범위를 벗어난 질문입니다. 다른 이야기를 해볼까요?"]), media_type="text/plain; charset=utf-8")
 
     if not DEEPSEEK_API_KEY:
         raise HTTPException(status_code=500, detail="DEEPSEEK_API_KEY가 설정되지 않았습니다.")
@@ -218,20 +214,18 @@ async def chat_endpoint(req: ChatRequest):
                                         break
                                 
                                 if is_violated:
-                                    # 위반 시 생성 중단 및 차단 문구 전송
                                     handle_device_violation(device_id, is_violation=True)
                                     yield "죄송합니다. 제 답변 중에 부적절한 내용이 포함되어 있었습니다. 다른 주제로 이야기 해볼까요?"
                                     return
                                     
-                                # 위반이 없으면 생성되는 조각을 프론트엔드로 실시간 송출
                                 yield content
                         except json.JSONDecodeError:
                             pass
         except Exception:
             yield "서버 오류가 발생했습니다."
 
-    # 프론트엔드로 텍스트 조각들을 실시간 스트림으로 반환
     return StreamingResponse(generate_stream(), media_type="text/plain; charset=utf-8")
+
 # --- 5. 관리자 API ---
 ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "my-school-secret-1234")
 
