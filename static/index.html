@@ -206,7 +206,7 @@
       const decoder = new TextDecoder();
       
       let fullText = "";
-// 💡 [최종 수정된 스트림 수신부]
+// // 💡 [최종 수정된 스트림 수신부]
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -214,23 +214,29 @@
         const chunk = decoder.decode(value, { stream: true });
         fullText += chunk;
         
-        // 입력 또는 출력 검열에 걸린 경우 (서버가 차단 메시지를 보낸 경우)
+        // 입력 또는 출력 검열에 걸린 경우
         if (fullText.includes("범위를 벗어난") || 
             fullText.includes("부적절한 내용") || 
             fullText.includes("일시 제한")) {
           
           aiMsgDiv.className = 'message blocked';
-          aiMsgDiv.innerText = fullText; // 서버가 보낸 차단 메시지를 화면에 정확히 출력!
           
+          // 💡 핵심: 앞서 출력되던 찌꺼기 텍스트를 무시하고, 오직 깔끔한 에러 메시지만 화면에 덮어씌움!
           if (fullText.includes("일시 제한")) {
+            aiMsgDiv.innerText = "이용 약관 위반으로 인해 귀하의 계정은 일시 제한되었습니다. 나중에 다시 시도해주세요.";
             userInput.placeholder = "이용이 제한된 계정입니다.";
             userInput.disabled = true;
             sendBtn.disabled = true;
+          } else if (fullText.includes("범위를 벗어난")) {
+            aiMsgDiv.innerText = "죄송합니다. 현재 제 범위를 벗어난 질문입니다. 다른 이야기를 해볼까요?";
+          } else {
+            aiMsgDiv.innerText = "죄송합니다. 제 답변 중에 부적절한 내용이 포함되어 있었습니다. 다른 주제로 이야기 해볼까요?";
           }
-          break; // 더 이상 스트림을 읽지 않고 종료
+          
+          break; // 스트리밍 즉시 종료
         }
         
-        // 정상적인 AI 응답일 때만 출력
+        // 정상적인 응답일 때만 텍스트를 누적해서 출력
         aiMsgDiv.innerText = fullText;
         scrollToBottom();
       }
