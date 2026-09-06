@@ -312,3 +312,7 @@ def unblock_device(device_id: str, x_admin_key: str = Header(None)):
         return {"message": f"기기('{device_id}') 차단이 해제되었습니다."}
     finally:
         db.close()
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)

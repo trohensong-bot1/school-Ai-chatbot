@@ -121,23 +121,170 @@
       background-color: #b0b0b5;
       cursor: not-allowed;
     }
+    /* 헤더 및 드롭다운 메뉴 스타일 */
+  .app-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    background-color: #ffffff;
+    border-bottom: 1px solid #e5e7eb;
+    position: relative;
+  }
+  .menu-container {
+    position: relative;
+  }
+  .menu-btn {
+    background: none;
+    border: none;
+    font-size: 20px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+  }
+  .menu-btn:hover {
+    background-color: #f3f4f6;
+  }
+  .dropdown-menu {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: 36px;
+    background-color: #ffffff;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    border-radius: 6px;
+    width: 140px;
+    z-index: 100;
+  }
+  .dropdown-menu.show {
+    display: block;
+  }
+  .dropdown-item {
+    display: block;
+    width: 100%;
+    padding: 10px 14px;
+    text-align: left;
+    background: none;
+    border: none;
+    font-size: 14px;
+    color: #374151;
+    cursor: pointer;
+    text-decoration: none;
+  }
+  .dropdown-item:hover {
+    background-color: #f3f4f6;
+  }
+
+  /* 모달 전체 배경 오버레이 */
+    .modal-overlay {
+      display: none; /* 평소엔 숨김 */
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.4);
+      z-index: 1000;
+      justify-content: center;
+      align-items: center;
+    }
+
+    /* 모달 창 본체 */
+    .modal-content {
+      background-color: #ffffff;
+      padding: 24px;
+      border-radius: 16px;
+      width: 80%;
+      max-width: 320px;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+      text-align: center;
+    }
+
+    .modal-content h3 {
+      margin-bottom: 12px;
+      font-size: 18px;
+      color: #1c1c1e;
+    }
+
+    .modal-content p {
+      font-size: 14px;
+      color: #3a3a3c;
+      line-height: 1.5;
+      margin-bottom: 20px;
+      text-align: left;
+    }
+
+    /* 확인 버튼 */
+    .modal-close-btn {
+      width: 100%;
+      padding: 10px;
+      background-color: #007aff;
+      color: #ffffff;
+      border: none;
+      border-radius: 10px;
+      font-weight: 600;
+      font-size: 15px;
+      cursor: pointer;
+    }
+
+    .modal-close-btn:hover {
+      background-color: #0056b3;
+    }
   </style>
 </head>
 <body>
 
-  <div class="chat-container">
-    <div class="chat-header">학교 AI 도우미</div>
+<div class="chat-container" style="max-width: 480px; margin: 20px auto; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; background: #fff;">
+  
+  <!-- 헤더 영역 -->
+  <div class="chat-header" style="display: flex; justify-content: space-between; align-items: center; position: relative; padding: 16px; background-color: #f9fafb; border-bottom: 1px solid #e5e7eb;">
+    <span><b>학교 AI 도우미</b></span>
     
-    <div class="chat-messages" id="chatMessages">
-      <div class="message ai">안녕하세요! 우리 학교에 대해 궁금한 점을 물어보세요.</div>
-    </div>
-
-    <div class="chat-input-area">
-      <input type="text" id="userInput" placeholder="메시지를 입력하세요..." onkeypress="handleKeyPress(event)">
-      <button id="sendBtn" onclick="sendMessage()">전송</button>
+    <div class="menu-container">
+      <button class="menu-btn" id="menuToggle" onclick="toggleDropdown(event)" style="background: none; border: none; font-size: 20px; cursor: pointer; padding: 0 4px;">⋮</button>
+      <div class="dropdown-menu" id="dropdownMenu" style="display: none; position: absolute; right: 0; top: 30px; background-color: #ffffff; border: 1px solid #e5e7eb; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border-radius: 6px; z-index: 100;">
+        <button class="dropdown-item" onclick="openModal('terms')" style="display: block; width: 100%;; text-align: left; background: none; border: none; font-size: 13px; cursor: pointer;">이용약관</button>
+        <button class="dropdown-item" onclick="openModal('credits')" style="display: block; width: 100%; text-align: left; background: none; border: none; font-size: 13px; cursor: pointer;">크레딧</button>
+      </div>
     </div>
   </div>
+    
+  <!-- 메시지 영역 -->
+  <div class="chat-messages" id="chatMessages" style="padding: 16px; height: 350px; overflow-y: auto;">
+    <div class="message ai">안녕하세요! 우리 학교에 대해 궁금한 점을 물어보세요.</div>
+  </div>
 
+  <!-- 입력 영역 -->
+  <div class="chat-input-area" style="display: flex; padding: 12px; border-top: 1px solid #e5e7eb; background: #fff;">
+    <input type="text" id="userInput" placeholder="메시지를 입력하세요..." onkeypress="handleKeyPress(event)" style="flex: 1; border: 1px solid #d1d5db; border-radius: 20px; outline: none;">
+    <button id="sendBtn" onclick="sendMessage()" style="margin-left: 8px; background: #007bff; color: white; border: none; border-radius: 20px; cursor: pointer;">전송</button>
+  </div>
+
+</div>
+<!-- 이용약관 모달 오버레이 -->
+<div class="modal-overlay" id="termsModal">
+  <div class="modal-content">
+    <h3>이용약관</h3>
+    <p>
+      본 서비스는 학교 Ai 도우미 앱으로 모두를 위한 교육용 서비스입니다.<br>
+      이용 시 발생하는 모든 책임은 사용자에게 있으며, 부적절한 사용은 제한될 수 있습니다. <br>
+      생성형 Ai를 이용한 서비스이며 Ai가 제공하는 정보는 부정확할 수 있습니다. <br> <br>
+      2026.9.6 / ver.1.0.3
+    </p>
+    <button class="modal-close-btn" onclick="closeModal('terms')">확인</button>
+  </div>
+</div>
+<div class="modal-overlay" id="creditsModal">
+  <div class="modal-content">
+    <h3>크레딧</h3>
+    <p>
+    아이디어와 채팅할 수 있는 Ai 모델을 제공한 DeepSeek에 감사 드림.<br>
+    프로젝트를 검토하고 배포를 도와준 Google Gemini에 감사 드림.
+    </p>
+    <button class="modal-close-btn" onclick="closeModal('terms')">확인</button>
+  </div>
+</div>
 <script>
   const chatMessages = document.getElementById('chatMessages');
   const userInput = document.getElementById('userInput');
@@ -252,6 +399,64 @@
       }
     }
   }
+  // 모달 열기
+  function openModal(type) {
+    if (type === 'terms') {
+      document.getElementById('termsModal').style.display = 'flex';
+    }
+    if (type === 'credits') {
+      document.getElementById('creditsModal').style.display = 'flex';
+    }    
+    // 드롭다운 메뉴가 열려있었다면 같이 닫아주기
+    const menu = document.getElementById('dropdownMenu');
+    if (menu) menu.classList.remove('show');
+  }
+
+  // 모달 닫기
+  function closeModal(type) {
+    if (type === 'terms') {
+      document.getElementById('termsModal').style.display = 'none';
+    }
+   if (type === 'credits') {
+      document.getElementById('creditsModal').style.display = 'none';
+    }
+  }
+
+  // (선택) 모달 바깥 배경을 눌렀을 때도 닫히게 하려면
+  window.addEventListener('click', function(event) {
+    const termsModal = document.getElementById('termsModal');
+    const creditsModal = document.getElementById('creditsModal');
+
+    // 이용약관 배경을 눌렀을 때
+    if (event.target === termsModal) {
+      termsModal.style.display = 'none';
+    }
+    // 크레딧 배경을 눌렀을 때
+    if (event.target === creditsModal) {
+      creditsModal.style.display = 'none';
+    }
+  });
+// 드롭다운 열고 닫기
+  function toggleDropdown(event) {
+    event.stopPropagation();
+    const menu = document.getElementById('dropdownMenu');
+    // 현재 상태에 따라 보이기/숨기기 토글
+    if (menu.style.display === 'block') {
+      menu.style.display = 'none';
+    } else {
+      menu.style.display = 'block';
+    }
+  }
+
+  // 화면 다른 곳을 누르면 드롭다운 닫기
+  window.addEventListener('click', function() {
+    const menu = document.getElementById('dropdownMenu');
+    if (menu && menu.style.display === 'block') {
+      menu.style.display = 'none';
+    }
+  });
+
+
 </script>
 </body>
 </html>
