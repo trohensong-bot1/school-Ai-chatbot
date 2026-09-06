@@ -160,7 +160,7 @@ async def chat_endpoint(req: ChatRequest):
     for word in both_banned_words:
         if word.strip() in user_message.strip():
             handle_device_violation(device_id, is_violation=True)
-            return StreamingResponse(iter(["죄송합니다. 현재 제 범위를 벗어난 질문입니다. 다른 이야기를 해볼까요?"]), media_type="text/plain; charset=utf-8")
+            return StreamingResponse(iter(["죄송합니다. 현재 제 범위를 벗어난 질문입니다. \n다른 이야기를 해볼까요?"]), media_type="text/plain; charset=utf-8")
 
     if not DEEPSEEK_API_KEY:
         raise HTTPException(status_code=500, detail="DEEPSEEK_API_KEY가 설정되지 않았습니다.")
