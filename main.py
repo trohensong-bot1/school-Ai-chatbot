@@ -64,6 +64,8 @@ class UserDevice(Base):
     __tablename__ = "user_devices"
     id = Column(Integer, primary_key=True, index=True)
     device_id = Column(String, unique=True, index=True, nullable=False)
+    device_model = Column(String, nullable=False)     # 구체적인 기종명 (예: "iPhone 17", "Galaxy S26" 등)
+    os_version = Column(String, nullable=True)
     violations = Column(Integer, default=0)
     is_blocked = Column(Boolean, default=False)
 
