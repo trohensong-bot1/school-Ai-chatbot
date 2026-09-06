@@ -158,7 +158,7 @@ async def chat_endpoint(req: ChatRequest):
     # 1. 사용자 입력 검열 ('both' 타입 금지어) -> AI 호출 전 즉시 차단
     both_banned_words = get_banned_words("both") 
     for word in both_banned_words:
-        if word in user_message:
+        if word.strip() in user_message.strip():
             handle_device_violation(device_id, is_violation=True)
             return StreamingResponse(iter(["죄송합니다. 현재 제 범위를 벗어난 질문입니다. 다른 이야기를 해볼까요?"]), media_type="text/plain; charset=utf-8")
 
