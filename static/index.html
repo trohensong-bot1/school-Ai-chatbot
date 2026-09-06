@@ -206,8 +206,7 @@
       const decoder = new TextDecoder();
       
       let fullText = "";
-
-      while (true) {
+while (true) {
         const { value, done } = await reader.read();
         if (done) break;
         
@@ -215,16 +214,16 @@
         fullText += chunk;
         aiMsgDiv.innerText = fullText;
         
-        // 차단 문구가 포함된 경우 스타일 변경
+        // 서버에서 차단 관련 안내 문구가 내려온 경우 스타일 변경 및 처리
         if (fullText.includes("범위를 벗어난") || 
             fullText.includes("부적절한 내용") || 
             fullText.includes("일시 제한")) {
           aiMsgDiv.className = 'message blocked';
+          
           if (fullText.includes("일시 제한")) {
             userInput.placeholder = "이용이 제한된 계정입니다.";
             userInput.disabled = true;
             sendBtn.disabled = true;
-            return;
           }
         }
         
